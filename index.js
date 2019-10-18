@@ -7,6 +7,9 @@ const editJsonFile = require('edit-json-file')
 const standardVersion = require('standard-version')
 const shell = require('shelljs')
 const chalk = require('chalk')
+const fs = require('fs')
+const fse = require('fs-extra')
+const prettier = require('prettier')
 const argv = require('yargs').argv
 const { name, version, author } = require('./package.json')
 
@@ -42,104 +45,112 @@ const log = {
 	}
 }
 
-// Verify the spcified field in target package.json
-const verifyInDeps = field => {
-	return targetPkgJson.get(`dependencies.${field}`) || targetPkgJson.get(`devDependencies.${field}`)
+/**
+ * Initialize eslint configuration
+ *
+ * The priority order of eslint configuration is
+ * .eslintrc.js -> .eslintrc.yaml -> .eslintrc.yml -> .eslintrc.json -> .eslintrc -> package.json
+ * Create or use existing `.eslintrc.js` to force override the eslint rules
+ */
+const initEslint = () => {
+	const configUrl = `${ROOT}/.eslintrc.js`
+	const isExist = fse.pathExistsSync(configUrl)
+	let content = `
+	module.exports = {
+		root: true,
+		// https://github.com/standard/standard/blob/master/docs/RULES-en.md
+		// https://github.com/vuejs/eslint-plugin-vue#priority-a-essential-error-prevention
+		// https://github.com/yuerbaby/eslint-config-yuer
+		extends: ['standard', 'plugin:vue/recommended', 'yuer'],
+		plugins: ['vue', 'babel', 'import']
+	}
+	`
+	if (isExist) {
+		content = fs.readFileSync(configUrl).toString('utf8')
+		if (content && !/\byuer\b/.test(content)) {
+			content = prettier.format(
+				content.replace(/extends(\s*):(\s*)\[([^\[]*)\]/g, match => {
+					return match.replace(']', ', "yuer"]')
+				})
+			)
+		}
+	}
+	fse.outputFileSync(configUrl, content)
 }
 
-const install = (packageName, callback) => {
-	if (!verifyInDeps(packageName) && packageName === 'husky') {
-		log.bright(`install ${packageName}...`)
-		try {
-			// shell
-			// 	.exec(`npm install --save-dev ${packageName}`, { silent: true, async: true })
-			// 	.stdout.on('data', function(data) {
-			// 		/* ... do something with data ... */
-			// 		log.warn('-----------------> 1111 ', shell.exec('npm list husky'))
-			// 	})
-		} catch (err) {
-			throw err
-		}
-		log.success(`${packageName} installed successfully.`)
-	}
-	callback && callback()
+/**
+ * Initialize husky
+ * Set lint-staged and commitlint in husky hooks,
+ * Append setting if already exists
+ */
+const initHusky = () => {
+	const precommit = targetPkgJson.get('husky.hooks.pre-commit') || 'lint-staged'
+	const commitmsg = targetPkgJson.get('husky.hooks.commit-msg') || 'commitlint -E HUSKY_GIT_PARAMS'
+	targetPkgJson.set('husky.hooks', {
+		'pre-commit': precommit.indexOf('lint-staged') !== -1 ? precommit : `${precommit} && lint-staged`,
+		'commit-msg': commitmsg.indexOf('commitlint') !== -1 ? commitmsg : `${commitmsg} && commitlint -E HUSKY_GIT_PARAMS`
+	})
+}
+
+/**
+ * Initialize lint-staged
+ */
+const initLintStaged = () => {
+	let staged = targetPkgJson.get('lint-staged') || {}
+	targetPkgJson.set(
+		'lint-staged',
+		assign(
+			{
+				// default lint-staged rules
+				'*.{js}': ['eslint --fix', 'git add'],
+				'*.{vue}': ['prettier --write *.vue', 'eslint --fix', 'git add'],
+				'*.{json,css,scss,less,sass,md,html,flow,ts,tsd}': ['prettier --write', 'git add']
+			},
+			staged
+		)
+	)
+}
+
+/**
+ * Initialzie commitlint
+ */
+const initCommitlint = () => {
+	targetPkgJson.set('commitlint', {
+		extends: ['@commitlint/config-conventional']
+	})
+}
+
+/**
+ * Initialize commitizen
+ */
+const initCommitizen = () => {
+	targetPkgJson.set('config.commitizen', {
+		maxHeaderWidth: argv.czMaxHeaderWidth || 100,
+		maxLineWidth: argv.czMaxLineWidth || 100,
+		defaultType: argv.czType || '',
+		defaultScope: argv.czScope || '',
+		defaultSubject: argv.czSubject || '',
+		defaultBody: argv.czBody || '',
+		defaultIssues: argv.czIssues || ''
+	})
+}
+
+/**
+ * Initialize yuermitag
+ */
+const initYuermitag = () => {
+	targetPkgJson.set('yuermitag.initialized', true)
+	targetPkgJson.save()
 }
 
 // Initial
-async function init() {
-	/**
-	 * husky
-	 * 1.determine the husky is installed.
-	 * 2.create the configuration
-	 */
-	await install('husky', () => {
-		const precommit = targetPkgJson.get('husky.hooks.pre-commit')
-		targetPkgJson.set('husky.hooks', {
-			'pre-commit': precommit && precommit.indexOf('lint-staged') !== -1 ? precommit : `${precommit} && lint-staged`,
-			'commit-msg': 'commitlint -E HUSKY_GIT_PARAMS'
-		})
-	})
-
-	/**
-	 * lint-staged
-	 */
-	install('lint-staged', () => {
-		let staged = targetPkgJson.get('lint-staged') || {}
-		targetPkgJson.set(
-			'lint-staged',
-			assign(
-				{
-					// default lint-staged rules
-					'*.{js}': ['eslint --fix', 'git add'],
-					'*.{vue}': ['prettier --write', 'eslint --fix', 'git add'],
-					'*.{json,css,scss,less,sass,md,html,flow,ts,tsd}': ['prettier --write', 'git add']
-				},
-				staged
-			)
-		)
-	})
-
-	/**
-	 * commitlint
-	 */
-	install('@commitlint/cli', () => {
-		// TODO
-	})
-	install('@commitlint/config-conventional', () => {
-		targetPkgJson.set('commitlint', {
-			extends: ['@commitlint/config-conventional']
-		})
-	})
-
-	install('prettier', () => {
-		// TODO
-	})
-
-	const CZ_TYPE = ['', 'feat', 'fix', 'docs', 'style', 'refactor', 'improvement', 'perf']
-	const {
-		czType = '',
-		czScope = '',
-		czSubject = '',
-		czBody = '',
-		czIssues = '',
-		czMaxHeaderWidth = 100,
-		czMaxLineWidth = 100
-	} = argv
-	if (CZ_TYPE.indexOf(czType) === -1) {
-		const error = new Error(`The value of --cz-type must be the following: ${CZ_TYPE.join()}`)
-		reject(error)
-		throw error
-	}
-	targetPkgJson.set('config.commitizen', {
-		path: './node_modules/cz-conventional-changelog',
-		maxHeaderWidth: czMaxHeaderWidth,
-		maxLineWidth: czMaxLineWidth,
-		defaultType: czType,
-		defaultScope: czScope,
-		defaultSubject: czSubject,
-		defaultBody: czBody,
-		defaultIssues: czIssues
-	})
+const initialize = () => {
+	initEslint()
+	initHusky()
+	initLintStaged()
+	initCommitizen()
+	initCommitlint()
+	initYuermitag()
 }
 
 // CLI behavior for yuert
@@ -154,6 +165,8 @@ const commands = {
 		})
 			.then(() => {
 				// standard-version is done
+				log.success(`The tag has been generated. Please use the following command to synchronize to the remote:`)
+				log.success(`git push --follow-tags origin master && npm publish`)
 			})
 			.catch(err => {
 				console.error(`standard-version failed with message: ${err.message}`)
@@ -164,7 +177,7 @@ const commands = {
 	commit() {
 		const bootstrap = require('commitizen/dist/cli/git-cz').bootstrap
 		bootstrap({
-			cliPath: path.join(__dirname, './node_modules/commitizen'),
+			cliPath: path.join(__dirname, '../../node_modules/commitizen'),
 			config: {
 				path: 'cz-conventional-changelog'
 			}
@@ -174,12 +187,12 @@ const commands = {
 
 function run() {
 	if (!configFileIsExist()) {
-		init()
+		initialize()
 	}
 	// Execute the specified command
 	argv._.forEach(commandName => {
 		const handler = commands[commandName]
-		handler()
+		handler && handler()
 	})
 
 	// Execute the default command
