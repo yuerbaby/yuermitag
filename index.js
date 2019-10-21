@@ -10,18 +10,12 @@ const chalk = require('chalk')
 const fs = require('fs')
 const fse = require('fs-extra')
 const prettier = require('prettier')
-const argv = require('yargs').argv
-const { name, version, author } = require('./package.json')
+const argv = require('./command.js').argv
 
 // constant
 const ROOT = process.cwd()
 const assign = Object.assign
 const targetPkgJson = editJsonFile(`${ROOT}/package.json`)
-
-// Determine yuermitag's configuration is exist
-const configFileIsExist = () => {
-	return !!targetPkgJson.get('yuermitag.initialized')
-}
 
 // Define the log level
 const log = {
@@ -45,6 +39,11 @@ const log = {
 	}
 }
 
+// Determine yuermitag's configuration is exist
+const configIsExist = (field) => {
+	return !!targetPkgJson.get(field)
+}
+
 /**
  * Initialize eslint configuration
  *
@@ -53,6 +52,10 @@ const log = {
  * Create or use existing `.eslintrc.js` to force override the eslint rules
  */
 const initEslint = () => {
+	if (configIsExist('yuermitag.eslint')) {
+		return;
+	}
+	targetPkgJson.set('yuermitag.eslint', true)
 	const configUrl = `${ROOT}/.eslintrc.js`
 	const isExist = fse.pathExistsSync(configUrl)
 	let content = `
@@ -84,6 +87,10 @@ const initEslint = () => {
  * Append setting if already exists
  */
 const initHusky = () => {
+	if (configIsExist('yuermitag.husky')) {
+		return;
+	}
+	targetPkgJson.set('yuermitag.husky', true)
 	const precommit = targetPkgJson.get('husky.hooks.pre-commit') || 'lint-staged'
 	const commitmsg = targetPkgJson.get('husky.hooks.commit-msg') || 'commitlint -E HUSKY_GIT_PARAMS'
 	targetPkgJson.set('husky.hooks', {
@@ -96,6 +103,10 @@ const initHusky = () => {
  * Initialize lint-staged
  */
 const initLintStaged = () => {
+	if (configIsExist('yuermitag.lint-staged')) {
+		return;
+	}
+	targetPkgJson.set('yuermitag.lint-staged', true)
 	let staged = targetPkgJson.get('lint-staged') || {}
 	targetPkgJson.set(
 		'lint-staged',
@@ -115,6 +126,10 @@ const initLintStaged = () => {
  * Initialzie commitlint
  */
 const initCommitlint = () => {
+	if (configIsExist('yuermitag.commitlint')) {
+		return;
+	}
+	targetPkgJson.set('yuermitag.commitlint', true)
 	targetPkgJson.set('commitlint', {
 		extends: ['@commitlint/config-conventional']
 	})
@@ -135,14 +150,6 @@ const initCommitizen = () => {
 	})
 }
 
-/**
- * Initialize yuermitag
- */
-const initYuermitag = () => {
-	targetPkgJson.set('yuermitag.initialized', true)
-	targetPkgJson.save()
-}
-
 // Initial
 const initialize = () => {
 	initEslint()
@@ -150,7 +157,7 @@ const initialize = () => {
 	initLintStaged()
 	initCommitizen()
 	initCommitlint()
-	initYuermitag()
+	targetPkgJson.save()
 }
 
 // CLI behavior for yuert
@@ -158,11 +165,22 @@ const commands = {
 	// yuert release
 	tag() {
 		// standardVersion returns a Promise
-		standardVersion({
+		const options = {
 			noVerify: true,
 			infile: './CHANGELOG.md',
 			silent: true
-		})
+		}
+		const { firstRelease, releaseAs, prerelease } = argv
+		if (firstRelease) {
+			options.firstRelease = firstRelease
+		}
+		if (releaseAs) {
+			options.releaseAs = releaseAs
+		}
+		if (prerelease) {
+			options.prerelease = prerelease
+		}
+		standardVersion(options)
 			.then(() => {
 				// standard-version is done
 				log.success(`The tag has been generated. Please use the following command to synchronize to the remote:`)
@@ -181,14 +199,13 @@ const commands = {
 			config: {
 				path: 'cz-conventional-changelog'
 			}
-		})
+		}, [])
 	}
 }
 
 function run() {
-	if (!configFileIsExist()) {
-		initialize()
-	}
+	initialize()
+	
 	// Execute the specified command
 	argv._.forEach(commandName => {
 		const handler = commands[commandName]
